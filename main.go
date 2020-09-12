@@ -2,13 +2,60 @@ package main
 
 import (
 	"fmt"
+	"html/template"
 	"log"
-	"strconv"
+	"net/http"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
+	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
 )
+
+var homeTemplate *template.Template
+var data Data
+
+type Data struct {
+	People []Person
+}
+type Person struct {
+	Id        int
+	Age       int
+	Email     string
+	FirstName string
+	LastName  string
+}
+
+func createPersonItem(p Person) *dynamodb.PutItemInput {
+	av, err := dynamodbattribute.MarshalMap(p)
+	checkError(err)
+	//fmt.Println(av.String())
+	item := &dynamodb.PutItemInput{
+		Item:      av,
+		TableName: aws.String("People"),
+	}
+	return item
+}
+
+func putPersons(p []Person, dynamoSvc *dynamodb.DynamoDB) {
+
+	for _, person := range p {
+		putItemInput := createPersonItem(person)
+
+		fmt.Printf("Adding %v to Dyanmo...\n", person.FirstName)
+		_, err := dynamoSvc.PutItem(putItemInput)
+		checkError(err)
+		fmt.Println(person.FirstName + " has been added to dyanmo.")
+	}
+}
+
+//Web page to use data
+func home(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	if err := homeTemplate.Execute(w, data); err != nil {
+		panic(err)
+	}
+}
 
 func checkError(err error) {
 	if err != nil {
@@ -16,51 +63,33 @@ func checkError(err error) {
 	}
 }
 
-type Person struct {
-	id        int
-	age       int
-	email     string
-	firstName string
-	lastName  string
-}
-
-func createPersonItem(p *Person) *dynamodb.PutItemInput {
-	item := &dynamodb.PutItemInput{
-		Item: map[string]*dynamodb.AttributeValue{
-			"id":        {N: aws.String(strconv.Itoa(p.id))},
-			"firstName": {S: aws.String(p.firstName)},
-			"lastName":  {S: aws.String(p.lastName)},
-			"age":       {N: aws.String(strconv.Itoa(p.age))},
-			"email":     {S: aws.String(p.email)},
-		},
-		TableName: aws.String("People"),
-	}
-	return item
-}
-
 func main() {
+	var people []Person
+	var err error
+	homeTemplate, err = template.ParseFiles("views/index.gohtml")
+	checkError(err)
 	// Create AWS DynamoDB service resources
-	persons := []*Person{
-		&Person{
-			id:        0,
-			firstName: "Brandon",
-			lastName:  "Phillips",
-			age:       30,
-			email:     "thedefinedone@gmail.com",
+	persons := []Person{
+		Person{
+			Id:        0,
+			FirstName: "Brandon",
+			LastName:  "Phillips",
+			Age:       30,
+			Email:     "thedefinedone@gmail.com",
 		},
-		&Person{
-			id:        1,
-			firstName: "Taylor",
-			lastName:  "Scahefer",
-			age:       22,
-			email:     "tshaef@gmail.com",
+		Person{
+			Id:        1,
+			FirstName: "Taylor",
+			LastName:  "Scahefer",
+			Age:       22,
+			Email:     "tshaef@gmail.com",
 		},
-		&Person{
-			id:        2,
-			firstName: "Joe",
-			lastName:  "Ruck",
-			age:       40,
-			email:     "jru@gmail.com",
+		Person{
+			Id:        2,
+			FirstName: "Joe",
+			LastName:  "Ruck",
+			Age:       40,
+			Email:     "jru@gmail.com",
 		},
 	}
 	config := &aws.Config{
@@ -78,14 +107,14 @@ func main() {
 		createTableOutput, err := dynamoSvc.CreateTable(&dynamodb.CreateTableInput{
 			AttributeDefinitions: []*dynamodb.AttributeDefinition{
 				{
-					AttributeName: aws.String("id"),
+					AttributeName: aws.String("Id"),
 					AttributeType: aws.String("N"),
 				},
 			},
 			TableName: aws.String("People"),
 			KeySchema: []*dynamodb.KeySchemaElement{
 				{
-					AttributeName: aws.String("id"),
+					AttributeName: aws.String("Id"),
 					KeyType:       aws.String("HASH"),
 				},
 			},
@@ -101,16 +130,29 @@ func main() {
 			TableName: aws.String(dynamoTableName),
 		})
 		fmt.Println("Table has been successfully created!")
-		fmt.Println(createTableOutput)
-	}
-	fmt.Println("Table name: " + *checktableOutput.Table.TableName)
+		putPersons(persons, dynamoSvc)
+	} else {
+		fmt.Println("Table name: " + *checktableOutput.Table.TableName)
 
-	for _, person := range persons {
-		putItemInput := createPersonItem(person)
-
-		fmt.Printf("Adding %v to Dyanmo...\n", person.firstName)
-		_, err := dynamoSvc.PutItem(putItemInput)
-		checkError(err)
-		fmt.Println(person.firstName + " has been added to dyanmo.")
+		putPersons(persons, dynamoSvc)
 	}
+
+	queryOutput, err := dynamoSvc.Scan(&dynamodb.ScanInput{
+		TableName: aws.String("People"),
+	})
+	checkError(err)
+
+	record := []Person{}
+	err = dynamodbattribute.UnmarshalListOfMaps(queryOutput.Items, &record)
+	checkError(err)
+	people = append(people, record...)
+	for _, person := range people {
+		fmt.Println(person.FirstName)
+	}
+	data = Data{
+		People: people,
+	}
+	http.HandleFunc("/", home)
+	http.ListenAndServe(":8080", nil)
+
 }
